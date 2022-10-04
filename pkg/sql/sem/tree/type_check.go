@@ -1075,7 +1075,7 @@ func (expr *FuncExpr) TypeCheck(
 
 	overloadImpls := make([]overloadImpl, 0, len(def.Overloads))
 	for i := range def.Overloads {
-		overloadImpls = append(overloadImpls, def.Overloads[i])
+		overloadImpls = append(overloadImpls, &def.Overloads[i])
 	}
 	typedSubExprs, fns, err := typeCheckOverloadedExprs(ctx, semaCtx, desired, overloadImpls, false, expr.Exprs...)
 	if err != nil {
@@ -1085,7 +1085,7 @@ func (expr *FuncExpr) TypeCheck(
 	var calledOnNullInputFns []overloadImpl
 	var notCalledOnNullInputFns []overloadImpl
 	for _, f := range fns {
-		if f.(QualifiedOverload).CalledOnNullInput {
+		if f.(*QualifiedOverload).CalledOnNullInput {
 			calledOnNullInputFns = append(calledOnNullInputFns, f)
 		} else {
 			notCalledOnNullInputFns = append(notCalledOnNullInputFns, f)
@@ -2937,7 +2937,7 @@ func (stripFuncsVisitor) VisitPost(expr Expr) Expr { return expr }
 // of QualifiedOverload. Also, the input should not be empty.
 func getMostSignificantOverload(
 	overloads []overloadImpl, searchPath SearchPath, expr *FuncExpr, getFuncSig func() string,
-) (QualifiedOverload, error) {
+) (*QualifiedOverload, error) {
 	ambiguousError := func() error {
 		return pgerror.Newf(
 			pgcode.AmbiguousFunction,
@@ -2948,13 +2948,13 @@ func getMostSignificantOverload(
 			formatCandidates(expr.Func.String(), overloads),
 		)
 	}
-	checkAmbiguity := func(oImpls []overloadImpl) (QualifiedOverload, error) {
+	checkAmbiguity := func(oImpls []overloadImpl) (*QualifiedOverload, error) {
 		if len(oImpls) > 1 {
 			// Throw ambiguity error if there are more than one candidate overloads from
 			// same schema.
-			return QualifiedOverload{}, ambiguousError()
+			return nil, ambiguousError()
 		}
-		return oImpls[0].(QualifiedOverload), nil
+		return oImpls[0].(*QualifiedOverload), nil
 	}
 
 	if searchPath == nil || searchPath == EmptySearchPath {
@@ -2964,10 +2964,10 @@ func getMostSignificantOverload(
 	udfFound := false
 	uniqueSchema := true
 	for i, o := range overloads {
-		if o.(QualifiedOverload).IsUDF {
+		if o.(*QualifiedOverload).IsUDF {
 			udfFound = true
 		}
-		if i > 0 && o.(QualifiedOverload).Schema != overloads[i-1].(QualifiedOverload).Schema {
+		if i > 0 && o.(*QualifiedOverload).Schema != overloads[i-1].(*QualifiedOverload).Schema {
 			uniqueSchema = false
 		}
 	}
@@ -2988,15 +2988,15 @@ func getMostSignificantOverload(
 	}
 
 	found := false
-	var ret QualifiedOverload
+	var ret *QualifiedOverload
 	err := searchPath.IterateSearchPath(func(schema string) error {
 		for i := range overloads {
-			if overloads[i].(QualifiedOverload).Schema == schema {
+			if overloads[i].(*QualifiedOverload).Schema == schema {
 				if found {
 					return ambiguousError()
 				}
 				found = true
-				ret = overloads[i].(QualifiedOverload)
+				ret = overloads[i].(*QualifiedOverload)
 			}
 		}
 		if found {
@@ -3005,13 +3005,13 @@ func getMostSignificantOverload(
 		return nil
 	})
 	if err != nil {
-		return QualifiedOverload{}, err
+		return nil, err
 	}
 	if !found {
 		// This should never happen. Otherwise, it means we get function from a
 		// schema no on the given search path or we try to resolve a function on an
 		// explicit schema, but get some function from other schemas are fetched.
-		return QualifiedOverload{}, pgerror.Newf(pgcode.UndefinedFunction, "unknown signature: %s", getFuncSig())
+		return nil, pgerror.Newf(pgcode.UndefinedFunction, "unknown signature: %s", getFuncSig())
 	}
 	return ret, nil
 }
