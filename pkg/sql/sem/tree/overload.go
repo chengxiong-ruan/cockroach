@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
@@ -564,7 +565,7 @@ func returnTypeToFixedType(s ReturnTyper, inputTyps []TypedExpr) *types.T {
 
 type typeCheckOverloadState struct {
 	overloads       []overloadImpl
-	overloadIdxs    []uint8 // index into overloads
+	overloadIdxs    util.FastIntSet // index into overloads
 	exprs           []Expr
 	typedExprs      []TypedExpr
 	resolvableIdxs  []int // index into exprs/typedExprs
@@ -637,9 +638,8 @@ func typeCheckOverloadedExprs(
 		return s.typedExprs, nil, nil
 	}
 
-	s.overloadIdxs = make([]uint8, len(overloads))
 	for i := 0; i < len(overloads); i++ {
-		s.overloadIdxs[i] = uint8(i)
+		s.overloadIdxs.Add(i)
 	}
 
 	// Filter out incorrect parameter length overloads.
@@ -648,13 +648,36 @@ func typeCheckOverloadedExprs(
 			return o.params().MatchLen(len(exprs))
 		})
 
+	filteredOlIdxes := util.FastIntSet{}
+	olIdx := 0
+	hasNext := true
+	for {
+		olIdx, hasNext = s.overloadIdxs.Next(olIdx)
+		if !hasNext {
+			break
+		}
+		if s.overloads[olIdx].params().MatchLen(len(exprs)) {
+			filteredOlIdxes.Add(olIdx)
+		}
+	}
+	s.overloadIdxs = filteredOlIdxes
+
 	// Filter out overloads which constants cannot become.
 	for _, i := range s.constIdxs {
 		constExpr := exprs[i].(Constant)
-		s.overloadIdxs = filterOverloads(s.overloads, s.overloadIdxs,
-			func(o overloadImpl) bool {
-				return canConstantBecome(constExpr, o.params().GetAt(i))
-			})
+		filteredOlIdxes := util.FastIntSet{}
+		olIdx := 0
+		hasNext := true
+		for {
+			olIdx, hasNext = s.overloadIdxs.Next(olIdx)
+			if !hasNext {
+				break
+			}
+			if canConstantBecome(constExpr, s.overloads[olIdx].params().GetAt(i)) {
+				filteredOlIdxes.Add(olIdx)
+			}
+		}
+		s.overloadIdxs = filteredOlIdxes
 	}
 
 	// TODO(nvanbenschoten): We should add a filtering step here to filter
@@ -669,15 +692,19 @@ func typeCheckOverloadedExprs(
 		// begin desiring that type for the corresponding argument expression.
 		// Note that this is always the case when we have a single overload left.
 		var sameType *types.T
-		for _, ovIdx := range s.overloadIdxs {
+		isSameType := true
+		s.overloadIdxs.ForEach(func(ovIdx int) {
+			if !isSameType {
+				return
+			}
 			typ := s.overloads[ovIdx].params().GetAt(i)
 			if sameType == nil {
 				sameType = typ
 			} else if !typ.Identical(sameType) {
 				sameType = nil
-				break
+				isSameType = false
 			}
-		}
+		})
 		if sameType != nil {
 			paramDesired = sameType
 		}
@@ -801,9 +828,10 @@ func typeCheckOverloadedExprs(
 		// resolved type information over to the constants, rather than attempting
 		// to resolve constants as the placeholder type for the user defined type
 		// family (like `AnyEnum`).
-		if len(s.overloadIdxs) == 1 && allConstantsAreHomogenous {
+		if s.overloadIdxs.Len() == 1 && allConstantsAreHomogenous {
 			overloadParamsAreHomogenous := true
-			p := s.overloads[s.overloadIdxs[0]].params()
+			olIdx, _ := s.overloadIdxs.Next(0)
+			p := s.overloads[olIdx].params()
 			for _, i := range s.constIdxs {
 				if !p.GetAt(i).Equivalent(homogeneousTyp) {
 					overloadParamsAreHomogenous = false
@@ -821,7 +849,7 @@ func typeCheckOverloadedExprs(
 					}
 					s.typedExprs[i] = typ
 				}
-				_, typedExprs, fn, err := checkReturnPlaceholdersAtIdx(ctx, semaCtx, &s, int(s.overloadIdxs[0]))
+				_, typedExprs, fn, err := checkReturnPlaceholdersAtIdx(ctx, semaCtx, &s, olIdx)
 				return typedExprs, fn, err
 			}
 		}
@@ -854,9 +882,9 @@ func typeCheckOverloadedExprs(
 			if ok, typedExprs, fns, err := checkReturn(ctx, semaCtx, &s); ok {
 				if len(fns) == 0 {
 					var overloadImpls []overloadImpl
-					for i := range prevOverloadIdxs {
+					prevOverloadIdxs.ForEach(func(i int) {
 						overloadImpls = append(overloadImpls, s.overloads[i])
-					}
+					})
 					return typedExprs, overloadImpls, err
 				}
 				return typedExprs, fns, err
@@ -909,8 +937,9 @@ func typeCheckOverloadedExprs(
 	// If we have one remaining candidate containing AnyEnum, cast all remaining
 	// arguments to a known enum and check that the rest match. This is a poor man's
 	// implicit cast / postgres "same argument" resolution clone.
-	if len(s.overloadIdxs) == 1 {
-		params := s.overloads[s.overloadIdxs[0]].params()
+	if s.overloadIdxs.Len() == 1 {
+		olIdx, _ := s.overloadIdxs.Next(0)
+		params := s.overloads[olIdx].params()
 		var knownEnum *types.T
 
 		// Check we have all "AnyEnum" (or "AnyEnum" array) arguments and that
@@ -1056,10 +1085,12 @@ func typeCheckOverloadedExprs(
 		return nil, nil, err
 	}
 
-	possibleOverloads := make([]overloadImpl, len(s.overloadIdxs))
-	for i, o := range s.overloadIdxs {
-		possibleOverloads[i] = s.overloads[o]
-	}
+	possibleOverloads := make([]overloadImpl, s.overloadIdxs.Len())
+	cur := 0
+	s.overloadIdxs.ForEach(func(i int) {
+		possibleOverloads[cur] = s.overloads[i]
+		cur++
+	})
 	return s.typedExprs, possibleOverloads, nil
 }
 
@@ -1072,7 +1103,7 @@ func filterAttempt(
 ) (ok bool, _ []TypedExpr, _ []overloadImpl, _ error) {
 	before := s.overloadIdxs
 	attempt()
-	if len(s.overloadIdxs) == 1 {
+	if s.overloadIdxs.Len() == 1 {
 		ok, typedExprs, fns, err := checkReturn(ctx, semaCtx, s)
 		if err != nil {
 			return false, nil, nil, err
@@ -1087,17 +1118,15 @@ func filterAttempt(
 
 // filterOverloads filters overloads which do not satisfy the predicate.
 func filterOverloads(
-	overloads []overloadImpl, overloadIdxs []uint8, fn func(overloadImpl) bool,
-) []uint8 {
-	for i := 0; i < len(overloadIdxs); {
-		if fn(overloads[overloadIdxs[i]]) {
-			i++
-		} else {
-			overloadIdxs[i], overloadIdxs[len(overloadIdxs)-1] = overloadIdxs[len(overloadIdxs)-1], overloadIdxs[i]
-			overloadIdxs = overloadIdxs[:len(overloadIdxs)-1]
+	overloads []overloadImpl, overloadIdxs util.FastIntSet, fn func(overloadImpl) bool,
+) util.FastIntSet {
+	ret := util.FastIntSet{}
+	overloadIdxs.ForEach(func(i int) {
+		if fn(overloads[i]) {
+			ret.Add(i)
 		}
-	}
-	return overloadIdxs
+	})
+	return ret
 }
 
 // defaultTypeCheck type checks the constant and placeholder expressions without a preference
@@ -1136,7 +1165,7 @@ func defaultTypeCheck(
 func checkReturn(
 	ctx context.Context, semaCtx *SemaContext, s *typeCheckOverloadState,
 ) (ok bool, _ []TypedExpr, _ []overloadImpl, _ error) {
-	switch len(s.overloadIdxs) {
+	switch s.overloadIdxs.Len() {
 	case 0:
 		if err := defaultTypeCheck(ctx, semaCtx, s, false); err != nil {
 			return false, nil, nil, err
@@ -1144,7 +1173,7 @@ func checkReturn(
 		return true, s.typedExprs, nil, nil
 
 	case 1:
-		idx := s.overloadIdxs[0]
+		idx, _ := s.overloadIdxs.Next(0)
 		o := s.overloads[idx]
 		p := o.params()
 		for _, i := range s.constIdxs {
