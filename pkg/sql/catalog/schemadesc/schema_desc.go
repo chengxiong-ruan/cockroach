@@ -492,7 +492,7 @@ func (desc *immutable) GetResolvedFuncDefinition(
 	}
 	funcDef := &tree.ResolvedFunctionDefinition{
 		Name:      name,
-		Overloads: make([]tree.QualifiedOverload, 0, len(funcDescPb.Overloads)),
+		Overloads: make([]*tree.QualifiedOverload, 0, len(funcDescPb.Overloads)),
 	}
 	for i := range funcDescPb.Overloads {
 		retType := funcDescPb.Overloads[i].ReturnType
@@ -512,7 +512,7 @@ func (desc *immutable) GetResolvedFuncDefinition(
 			)
 		}
 		overload.Types = argTypes
-		prefixedOverload := tree.MakeQualifiedOverload(desc.GetName(), overload)
+		prefixedOverload := tree.NewMakeQualifiedOverload(desc.GetName(), overload)
 		funcDef.Overloads = append(funcDef.Overloads, prefixedOverload)
 	}
 

@@ -101,6 +101,18 @@ func unaryOpFixups(
 // unaryOpOverload is an overloaded set of unary operator implementations.
 type unaryOpOverload []overloadImpl
 
+func (o unaryOpOverload) NumOverloads() int {
+	return len(o)
+}
+
+func (o unaryOpOverload) GetOverloadAt(i uint8) overloadImpl {
+	return o[i]
+}
+
+func (o unaryOpOverload) SliceAt(i uint8) []overloadImpl {
+	return o[i : i+1]
+}
+
 // UnaryOps contains the unary operations indexed by operation type.
 var UnaryOps = unaryOpFixups(map[UnaryOperatorSymbol]unaryOpOverload{
 	UnaryPlus: {
@@ -454,6 +466,18 @@ func init() {
 
 // binOpOverload is an overloaded set of binary operator implementations.
 type binOpOverload []overloadImpl
+
+func (o binOpOverload) NumOverloads() int {
+	return len(o)
+}
+
+func (o binOpOverload) GetOverloadAt(i uint8) overloadImpl {
+	return o[i]
+}
+
+func (o binOpOverload) SliceAt(i uint8) []overloadImpl {
+	return o[i : i+1]
+}
 
 func (o binOpOverload) LookupImpl(left, right *types.T) (*BinOp, bool) {
 	for _, fn := range o {
@@ -1379,6 +1403,18 @@ func cmpOpFixups(
 
 // cmpOpOverload is an overloaded set of comparison operator implementations.
 type cmpOpOverload []overloadImpl
+
+func (o cmpOpOverload) NumOverloads() int {
+	return len(o)
+}
+
+func (o cmpOpOverload) GetOverloadAt(i uint8) overloadImpl {
+	return o[i]
+}
+
+func (o cmpOpOverload) SliceAt(i uint8) []overloadImpl {
+	return o[i : i+1]
+}
 
 func (o cmpOpOverload) LookupImpl(left, right *types.T) (*CmpOp, bool) {
 	for _, fn := range o {

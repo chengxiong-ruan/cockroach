@@ -269,6 +269,12 @@ var _ overloadImpl = &UnaryOp{}
 var _ overloadImpl = &BinOp{}
 var _ overloadImpl = &CmpOp{}
 
+type overloadImpls interface {
+	NumOverloads() int
+	GetOverloadAt(uint8) overloadImpl
+	SliceAt(i uint8) []overloadImpl
+}
+
 // GetParamsAndReturnType gets the parameters and return type of an
 // overloadImpl.
 func GetParamsAndReturnType(impl overloadImpl) (TypeList, ReturnTyper) {
@@ -563,7 +569,7 @@ func returnTypeToFixedType(s ReturnTyper, inputTyps []TypedExpr) *types.T {
 }
 
 type typeCheckOverloadState struct {
-	overloads       []overloadImpl
+	overloads       overloadImpls
 	overloadIdxs    []uint8 // index into overloads
 	exprs           []Expr
 	typedExprs      []TypedExpr
@@ -588,12 +594,12 @@ func typeCheckOverloadedExprs(
 	ctx context.Context,
 	semaCtx *SemaContext,
 	desired *types.T,
-	overloads []overloadImpl,
+	overloads overloadImpls,
 	inBinOp bool,
 	exprs ...Expr,
 ) ([]TypedExpr, []overloadImpl, error) {
-	if len(overloads) > math.MaxUint8 {
-		return nil, nil, errors.AssertionFailedf("too many overloads (%d > 255)", len(overloads))
+	if overloads.NumOverloads() > math.MaxUint8 {
+		return nil, nil, errors.AssertionFailedf("too many overloads (%d > 255)", overloads.NumOverloads())
 	}
 
 	var s typeCheckOverloadState
@@ -602,10 +608,11 @@ func typeCheckOverloadedExprs(
 
 	// Special-case the HomogeneousType overload. We determine its return type by checking that
 	// all parameters have the same type.
-	for i, overload := range overloads {
+	for i := 0; i < overloads.NumOverloads(); i++ {
+		overload := overloads.GetOverloadAt(uint8(i))
 		// Only one overload can be provided if it has parameters with HomogeneousType.
 		if _, ok := overload.params().(HomogeneousType); ok {
-			if len(overloads) > 1 {
+			if overloads.NumOverloads() > 1 {
 				return nil, nil, errors.AssertionFailedf(
 					"only one overload can have HomogeneousType parameters")
 			}
@@ -613,7 +620,7 @@ func typeCheckOverloadedExprs(
 			if err != nil {
 				return nil, nil, err
 			}
-			return typedExprs, overloads[i : i+1], nil
+			return typedExprs, overloads.SliceAt(uint8(i)), nil
 		}
 	}
 
@@ -622,7 +629,7 @@ func typeCheckOverloadedExprs(
 	s.constIdxs, s.placeholderIdxs, s.resolvableIdxs = typeCheckSplitExprs(ctx, semaCtx, exprs)
 
 	// If no overloads are provided, just type check parameters and return.
-	if len(overloads) == 0 {
+	if overloads.NumOverloads() == 0 {
 		for _, i := range s.resolvableIdxs {
 			typ, err := exprs[i].TypeCheck(ctx, semaCtx, types.Any)
 			if err != nil {
@@ -637,8 +644,8 @@ func typeCheckOverloadedExprs(
 		return s.typedExprs, nil, nil
 	}
 
-	s.overloadIdxs = make([]uint8, len(overloads))
-	for i := 0; i < len(overloads); i++ {
+	s.overloadIdxs = make([]uint8, overloads.NumOverloads())
+	for i := 0; i < overloads.NumOverloads(); i++ {
 		s.overloadIdxs[i] = uint8(i)
 	}
 
@@ -670,7 +677,7 @@ func typeCheckOverloadedExprs(
 		// Note that this is always the case when we have a single overload left.
 		var sameType *types.T
 		for _, ovIdx := range s.overloadIdxs {
-			typ := s.overloads[ovIdx].params().GetAt(i)
+			typ := s.overloads.GetOverloadAt(ovIdx).params().GetAt(i)
 			if sameType == nil {
 				sameType = typ
 			} else if !typ.Identical(sameType) {
@@ -803,7 +810,7 @@ func typeCheckOverloadedExprs(
 		// family (like `AnyEnum`).
 		if len(s.overloadIdxs) == 1 && allConstantsAreHomogenous {
 			overloadParamsAreHomogenous := true
-			p := s.overloads[s.overloadIdxs[0]].params()
+			p := s.overloads.GetOverloadAt(s.overloadIdxs[0]).params()
 			for _, i := range s.constIdxs {
 				if !p.GetAt(i).Equivalent(homogeneousTyp) {
 					overloadParamsAreHomogenous = false
@@ -854,8 +861,8 @@ func typeCheckOverloadedExprs(
 			if ok, typedExprs, fns, err := checkReturn(ctx, semaCtx, &s); ok {
 				if len(fns) == 0 {
 					var overloadImpls []overloadImpl
-					for i := range prevOverloadIdxs {
-						overloadImpls = append(overloadImpls, s.overloads[i])
+					for _, i := range prevOverloadIdxs {
+						overloadImpls = append(overloadImpls, s.overloads.GetOverloadAt(i))
 					}
 					return typedExprs, overloadImpls, err
 				}
@@ -910,7 +917,7 @@ func typeCheckOverloadedExprs(
 	// arguments to a known enum and check that the rest match. This is a poor man's
 	// implicit cast / postgres "same argument" resolution clone.
 	if len(s.overloadIdxs) == 1 {
-		params := s.overloads[s.overloadIdxs[0]].params()
+		params := s.overloads.GetOverloadAt(s.overloadIdxs[0]).params()
 		var knownEnum *types.T
 
 		// Check we have all "AnyEnum" (or "AnyEnum" array) arguments and that
@@ -1052,13 +1059,13 @@ func typeCheckOverloadedExprs(
 		}
 	}
 
-	if err := defaultTypeCheck(ctx, semaCtx, &s, len(s.overloads) > 0); err != nil {
+	if err := defaultTypeCheck(ctx, semaCtx, &s, s.overloads.NumOverloads() > 0); err != nil {
 		return nil, nil, err
 	}
 
 	possibleOverloads := make([]overloadImpl, len(s.overloadIdxs))
 	for i, o := range s.overloadIdxs {
-		possibleOverloads[i] = s.overloads[o]
+		possibleOverloads[i] = s.overloads.GetOverloadAt(o)
 	}
 	return s.typedExprs, possibleOverloads, nil
 }
@@ -1087,10 +1094,10 @@ func filterAttempt(
 
 // filterOverloads filters overloads which do not satisfy the predicate.
 func filterOverloads(
-	overloads []overloadImpl, overloadIdxs []uint8, fn func(overloadImpl) bool,
+	overloads overloadImpls, overloadIdxs []uint8, fn func(overloadImpl) bool,
 ) []uint8 {
 	for i := 0; i < len(overloadIdxs); {
-		if fn(overloads[overloadIdxs[i]]) {
+		if fn(overloads.GetOverloadAt(overloadIdxs[i])) {
 			i++
 		} else {
 			overloadIdxs[i], overloadIdxs[len(overloadIdxs)-1] = overloadIdxs[len(overloadIdxs)-1], overloadIdxs[i]
@@ -1145,7 +1152,7 @@ func checkReturn(
 
 	case 1:
 		idx := s.overloadIdxs[0]
-		o := s.overloads[idx]
+		o := s.overloads.GetOverloadAt(idx)
 		p := o.params()
 		for _, i := range s.constIdxs {
 			des := p.GetAt(i)
@@ -1178,7 +1185,7 @@ func checkReturn(
 func checkReturnPlaceholdersAtIdx(
 	ctx context.Context, semaCtx *SemaContext, s *typeCheckOverloadState, idx int,
 ) (bool, []TypedExpr, []overloadImpl, error) {
-	o := s.overloads[idx]
+	o := s.overloads.GetOverloadAt(uint8(idx))
 	p := o.params()
 	for _, i := range s.placeholderIdxs {
 		des := p.GetAt(i)
@@ -1191,7 +1198,7 @@ func checkReturnPlaceholdersAtIdx(
 		}
 		s.typedExprs[i] = typ
 	}
-	return true, s.typedExprs, s.overloads[idx : idx+1], nil
+	return true, s.typedExprs, s.overloads.SliceAt(uint8(idx)), nil
 }
 
 func formatCandidates(prefix string, candidates []overloadImpl) string {

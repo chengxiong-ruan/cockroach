@@ -45,7 +45,7 @@ type ResolvedFunctionDefinition struct {
 	// not qualified.
 	Name string
 
-	Overloads []QualifiedOverload
+	Overloads []*QualifiedOverload
 }
 
 // QualifiedOverload is a wrapper of Overload prefixed with a schema name.
@@ -55,9 +55,23 @@ type QualifiedOverload struct {
 	*Overload
 }
 
-// MakeQualifiedOverload creates a new QualifiedOverload.
-func MakeQualifiedOverload(schema string, overload *Overload) QualifiedOverload {
-	return QualifiedOverload{Schema: schema, Overload: overload}
+type qualifiedOverloads []*QualifiedOverload
+
+func (o qualifiedOverloads) NumOverloads() int {
+	return len(o)
+}
+
+func (o qualifiedOverloads) GetOverloadAt(i uint8) overloadImpl {
+	return o[i]
+}
+
+func (o qualifiedOverloads) SliceAt(i uint8) []overloadImpl {
+	return []overloadImpl{o[i]}
+}
+
+// NewMakeQualifiedOverload creates a new QualifiedOverload.
+func NewMakeQualifiedOverload(schema string, overload *Overload) *QualifiedOverload {
+	return &QualifiedOverload{Schema: schema, Overload: overload}
 }
 
 // FunctionProperties defines the properties of the built-in
@@ -264,8 +278,8 @@ func (fd *ResolvedFunctionDefinition) MergeWith(
 // ErrFunctionUndefined cause is returned if not matched found.
 func (fd *ResolvedFunctionDefinition) MatchOverload(
 	argTypes []*types.T, explicitSchema string, searchPath SearchPath,
-) (QualifiedOverload, error) {
-	matched := func(ol QualifiedOverload, schema string) bool {
+) (*QualifiedOverload, error) {
+	matched := func(ol *QualifiedOverload, schema string) bool {
 		return schema == ol.Schema && (argTypes == nil || ol.params().Match(argTypes))
 	}
 	typeNames := func() string {
@@ -277,7 +291,7 @@ func (fd *ResolvedFunctionDefinition) MatchOverload(
 	}
 
 	found := false
-	ret := make([]QualifiedOverload, 0, len(fd.Overloads))
+	ret := make([]*QualifiedOverload, 0, len(fd.Overloads))
 
 	findMatches := func(schema string) {
 		for i := range fd.Overloads {
@@ -299,18 +313,18 @@ func (fd *ResolvedFunctionDefinition) MatchOverload(
 	}
 
 	if len(ret) == 0 {
-		return QualifiedOverload{}, errors.Wrapf(
+		return nil, errors.Wrapf(
 			ErrFunctionUndefined, "function %s(%s) does not exist", fd.Name, typeNames(),
 		)
 	}
 	if len(ret) > 1 {
-		return QualifiedOverload{}, errors.Errorf("function name %q is not unique", fd.Name)
+		return nil, errors.Errorf("function name %q is not unique", fd.Name)
 	}
 	return ret[0], nil
 }
 
-func combineOverloads(a, b []QualifiedOverload) []QualifiedOverload {
-	return append(append(make([]QualifiedOverload, 0, len(a)+len(b)), a...), b...)
+func combineOverloads(a, b []*QualifiedOverload) []*QualifiedOverload {
+	return append(append(make([]*QualifiedOverload, 0, len(a)+len(b)), a...), b...)
 }
 
 // GetClass returns function class by checking each overload's Class and returns
@@ -366,12 +380,12 @@ func QualifyBuiltinFunctionDefinition(
 ) *ResolvedFunctionDefinition {
 	ret := &ResolvedFunctionDefinition{
 		Name:      def.Name,
-		Overloads: make([]QualifiedOverload, 0, len(def.Definition)),
+		Overloads: make([]*QualifiedOverload, 0, len(def.Definition)),
 	}
 	for _, o := range def.Definition {
 		ret.Overloads = append(
 			ret.Overloads,
-			MakeQualifiedOverload(schema, o),
+			NewMakeQualifiedOverload(schema, o),
 		)
 	}
 	return ret

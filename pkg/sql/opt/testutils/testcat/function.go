@@ -99,7 +99,7 @@ func (tc *Catalog) CreateFunction(c *tree.CreateFunction) {
 		Volatility:        v,
 		CalledOnNullInput: calledOnNullInput,
 	}
-	prefixedOverload := tree.MakeQualifiedOverload("public", overload)
+	prefixedOverload := tree.NewMakeQualifiedOverload("public", overload)
 	def := &tree.ResolvedFunctionDefinition{
 		Name: name,
 		// TODO(mgartner): Consider setting Class and CompositeInsensitive fo
