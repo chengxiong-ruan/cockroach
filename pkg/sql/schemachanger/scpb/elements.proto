@@ -13,6 +13,7 @@ package cockroach.sql.schemachanger.scpb;
 option go_package = "scpb";
 
 import "sql/catalog/catpb/catalog.proto";
+import "sql/catalog/catpb/function.proto";
 import "sql/catalog/catpb/index.proto";
 import "sql/types/types.proto";
 import "gogoproto/gogo.proto";
@@ -528,4 +529,57 @@ message IndexData {
 
 message TablePartitioning {
   uint32 table_id = 1 [(gogoproto.customname) = "TableID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+}
+
+message Function {
+  message Parameter {
+    cockroach.sql.catalog.catpb.FunctionParamClass class = 1 [(gogoproto.nullable) = false];
+    string name = 2;
+    TypeT type = 3 [(gogoproto.nullable) = false];
+    Expression default = 4 [(gogoproto.nullable) = false];
+  }
+
+  uint32 function_id = 1 [(gogoproto.customname) = "FunctionID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+  repeated Parameter params = 2 [(gogoproto.nullable) = false];
+
+  bool return_set = 3;
+  TypeT return_type = 4 [(gogoproto.nullable) = false];
+}
+
+message FunctionName {
+  uint32 function_id = 1 [(gogoproto.customname) = "FunctionID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+  string name = 2;
+}
+
+message FunctionVolatility {
+  uint32 function_id = 1 [(gogoproto.customname) = "FunctionID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+  cockroach.sql.catalog.catpb.FunctionVolatility volatility = 2 [(gogoproto.nullable) = false];
+}
+
+message FunctionNullInputBehavior {
+  uint32 function_id = 1 [(gogoproto.customname) = "FunctionID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+  cockroach.sql.catalog.catpb.FunctionNullInputBehavior null_input_behavior = 11 [(gogoproto.nullable) = false];
+}
+
+message FunctionBody {
+  message TableReference {
+    uint32 table_id = 1 [(gogoproto.customname) = "TableID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+    repeated uint32 column_ids = 2 [(gogoproto.customname) = "ColumnIDs", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.ColumnID"];
+    repeated uint32 index_idx = 3 [(gogoproto.customname) = "IndexIDs", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.IndexID"];
+  }
+
+  message ViewReference {
+    uint32 view_id = 1 [(gogoproto.customname) = "ViewID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+    repeated uint32 column_ids = 2 [(gogoproto.customname) = "ColumnIDs", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.ColumnID"];
+  }
+
+  uint32 function_id = 1 [(gogoproto.customname) = "FunctionID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/catid.DescID"];
+  string body = 2;
+  cockroach.sql.catalog.catpb.FunctionLanguage lang = 3 [(gogoproto.nullable) = false];
+
+  repeated TableReference uses_tables = 4 [(gogoproto.nullable) = false];
+  repeated ViewReference uses_views = 5 [(gogoproto.nullable) = false];
+  repeated uint32 uses_sequence_ids = 6;
+  repeated uint32 uses_type_ids = 7;
+  repeated uint32 uses_function_ids = 8;
 }
